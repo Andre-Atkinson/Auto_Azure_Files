@@ -1,0 +1,9 @@
+# Secrets
+.env
+
+# Logs
+logs/
+
+# Docs
+docs/
+swagger.json

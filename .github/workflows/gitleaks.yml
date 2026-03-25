@@ -1,0 +1,49 @@
+name: Secret Scan
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          version=8.30.1
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp
+          sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+
+      - name: Scan new changes for secrets
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            range="${PR_BASE_SHA}..${PR_HEAD_SHA}"
+            echo "Scanning pull request range: $range"
+            gitleaks git . --log-opts "$range" --redact --no-banner
+          elif [[ -n "${BEFORE_SHA}" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            range="${BEFORE_SHA}..${HEAD_SHA}"
+            echo "Scanning push range: $range"
+            gitleaks git . --log-opts "$range" --redact --no-banner
+          else
+            echo "No prior commit range available; scanning current tree."
+            gitleaks dir . --redact --no-banner
+          fi

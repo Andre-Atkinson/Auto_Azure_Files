@@ -31,7 +31,7 @@ param(
 
 	[string]$VeeamUsername = 'Your Veeam Username Here',
 
-	[string]$VeeamPassword = 'Your Veeam Password Here',
+	[Alias('VeeamPassword')][System.Security.SecureString]$VeeamSecret,
 
 	[string]$VeeamCacheRepositoryName,
 
@@ -41,9 +41,9 @@ param(
 
 	[switch]$ListOnly,
 
-	[switch]$AllowInsecureVeeamTls = $true,
+	[AllowNull()][Nullable[bool]]$AllowInsecureVeeamTls,
 
-	[switch]$EnableTranscript = $true,
+	[AllowNull()][Nullable[bool]]$EnableTranscript,
 
 	[string]$TranscriptPath
 )
@@ -57,6 +57,14 @@ $script:WarnedAboutInsecureAzureTls = $false
 $script:WarnedAboutInsecureVeeamTls = $false
 $script:TranscriptStarted = $false
 $script:ResolvedTranscriptPath = ''
+
+if ($null -eq $AllowInsecureVeeamTls) {
+	$AllowInsecureVeeamTls = $true
+}
+
+if ($null -eq $EnableTranscript) {
+	$EnableTranscript = $true
+}
 
 # Flattens exception and inner-exception messages for actionable error output.
 function Get-ExceptionMessageChain {
@@ -96,7 +104,7 @@ function Write-Log {
 }
 
 # Ensures HOME points to a writable directory for Linux web cmdlet compatibility.
-function Ensure-WebCmdletHomeDirectory {
+function Set-WebCmdletHomeDirectory {
 	if (-not $IsLinux) {
 		return
 	}
@@ -253,6 +261,35 @@ function Assert-NonEmpty {
 
 	if ([string]::IsNullOrWhiteSpace($Value)) {
 		throw "Missing required value: $Name"
+	}
+}
+
+# Throws if a required secure secret is missing so failures happen early and clearly.
+function Assert-SecureStringPresent {
+	param(
+		[Parameter(Mandatory = $true)][string]$Name,
+		[Parameter(Mandatory = $true)][AllowNull()][System.Security.SecureString]$Value
+	)
+
+	if ($null -eq $Value -or $Value.Length -eq 0) {
+		throw "Missing required value: $Name"
+	}
+}
+
+# Converts a SecureString to plain text only at the API boundary.
+function ConvertFrom-SecureStringToPlainText {
+	param(
+		[Parameter(Mandatory = $true)][System.Security.SecureString]$Value
+	)
+
+	$bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Value)
+	try {
+		return [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+	}
+	finally {
+		if ($bstr -ne [System.IntPtr]::Zero) {
+			[System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+		}
 	}
 }
 
@@ -489,7 +526,7 @@ function Get-AzureFilesUncPath {
 }
 
 # Normalizes NAS paths for case-insensitive path comparisons.
-function Normalize-NasPath {
+function ConvertTo-NasPath {
 	param(
 		[Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path
 	)
@@ -647,7 +684,7 @@ function New-VeeamApiSession {
 	param(
 		[Parameter(Mandatory = $true)][string]$Server,
 		[Parameter(Mandatory = $true)][string]$Username,
-		[Parameter(Mandatory = $true)][string]$Password,
+		[Parameter(Mandatory = $true)][System.Security.SecureString]$Secret,
 		[switch]$AllowInsecureTls
 	)
 
@@ -660,13 +697,19 @@ function New-VeeamApiSession {
 		AllowInsecureTls = [bool]$AllowInsecureTls
 	}
 
-	$tokenResponse = Invoke-VeeamApiRequest `
-		-Method POST `
-		-Session $session `
-		-RelativePath '/api/oauth2/token' `
-		-Body @{ grant_type = 'password'; username = $Username; password = $Password } `
-		-ContentType 'application/x-www-form-urlencoded' `
-		-SkipAuthorization
+	$plainTextPassword = ConvertFrom-SecureStringToPlainText -Value $Secret
+	try {
+		$tokenResponse = Invoke-VeeamApiRequest `
+			-Method POST `
+			-Session $session `
+			-RelativePath '/api/oauth2/token' `
+			-Body @{ grant_type = 'password'; username = $Username; password = $plainTextPassword } `
+			-ContentType 'application/x-www-form-urlencoded' `
+			-SkipAuthorization
+	}
+	finally {
+		$plainTextPassword = $null
+	}
 
 	if ($null -eq $tokenResponse -or [string]::IsNullOrWhiteSpace([string]$tokenResponse.access_token)) {
 		throw 'Veeam token request succeeded but no access token was returned.'
@@ -842,11 +885,11 @@ function Get-VeeamFileBackupJobByNameSingle {
 }
 
 # Finds an existing script-managed standard credentials record or creates one.
-function Ensure-VeeamStandardCredentials {
+function Set-VeeamStandardCredentials {
 	param(
 		[Parameter(Mandatory = $true)][pscustomobject]$Session,
 		[Parameter(Mandatory = $true)][string]$Username,
-		[Parameter(Mandatory = $true)][string]$Password,
+		[Parameter(Mandatory = $true)][System.Security.SecureString]$Secret,
 		[Parameter(Mandatory = $true)][string]$Description
 	)
 
@@ -866,15 +909,27 @@ function Ensure-VeeamStandardCredentials {
 
 	if ($matching.Count -gt 0) {
 		$credId = [string]$matching[0].id
-		Invoke-VeeamApiRequest -Method POST -Session $Session -RelativePath ("/api/v1/credentials/{0}/changepassword" -f $credId) -Body @{ password = $Password } | Out-Null
+		$plainTextPassword = ConvertFrom-SecureStringToPlainText -Value $Secret
+		try {
+			Invoke-VeeamApiRequest -Method POST -Session $Session -RelativePath ("/api/v1/credentials/{0}/changepassword" -f $credId) -Body @{ password = $plainTextPassword } | Out-Null
+		}
+		finally {
+			$plainTextPassword = $null
+		}
 		return $credId
 	}
 
-	$created = Invoke-VeeamApiRequest -Method POST -Session $Session -RelativePath '/api/v1/credentials' -Body @{
-		username = $Username
-		description = $Description
-		type = 'Standard'
-		password = $Password
+	$plainTextPassword = ConvertFrom-SecureStringToPlainText -Value $Secret
+	try {
+		$created = Invoke-VeeamApiRequest -Method POST -Session $Session -RelativePath '/api/v1/credentials' -Body @{
+			username = $Username
+			description = $Description
+			type = 'Standard'
+			password = $plainTextPassword
+		}
+	}
+	finally {
+		$plainTextPassword = $null
 	}
 
 	if ($null -eq $created -or [string]::IsNullOrWhiteSpace([string]$created.id)) {
@@ -902,7 +957,7 @@ function Get-VeeamSmbShareServersByPath {
 			continue
 		}
 
-		$normalized = Normalize-NasPath -Path ([string]$server.path)
+		$normalized = ConvertTo-NasPath -Path ([string]$server.path)
 		if ([string]::IsNullOrWhiteSpace($normalized)) {
 			continue
 		}
@@ -922,7 +977,7 @@ function Add-VeeamSmbShareServer {
 	param(
 		[Parameter(Mandatory = $true)][pscustomobject]$Session,
 		[Parameter(Mandatory = $true)][string]$UncPath,
-		[Parameter(Mandatory = $true)][string]$CredentialsId,
+		[Parameter(Mandatory = $true)][string]$AccessRecordId,
 		[Parameter(Mandatory = $true)][string]$CacheRepositoryId
 	)
 
@@ -930,7 +985,7 @@ function Add-VeeamSmbShareServer {
 		type = 'SMBShare'
 		path = $UncPath
 		accessCredentialsRequired = $true
-		accessCredentialsId = $CredentialsId
+		accessCredentialsId = $AccessRecordId
 		processing = @{
 			backupProxies = @{
 				autoSelectEnabled = $true
@@ -948,7 +1003,7 @@ function Add-VeeamSmbShareServer {
 
 try {
 	Start-ScriptTranscriptIfEnabled -Enabled:$EnableTranscript -Path $TranscriptPath
-	Ensure-WebCmdletHomeDirectory
+	Set-WebCmdletHomeDirectory
 	Write-Log -Level INFO -Message ("Script version: {0}" -f $script:ScriptVersion)
 
 	# Step 1: resolve runtime configuration from inline defaults and optional parameter overrides.
@@ -992,7 +1047,7 @@ try {
 
 	Assert-NonEmpty -Name 'VEEAM_NAS_JOB_NAME (VeeamJobName)' -Value $VeeamJobName
 	Assert-NonEmpty -Name 'VEEAM_USERNAME (VeeamUsername)' -Value $VeeamUsername
-	Assert-NonEmpty -Name 'VEEAM_PASSWORD (VeeamPassword)' -Value $VeeamPassword
+	Assert-SecureStringPresent -Name 'VEEAM_PASSWORD (VeeamPassword/VeeamSecret)' -Value $VeeamSecret
 	if ([string]::IsNullOrWhiteSpace($VeeamServer)) {
 		$VeeamServer = 'localhost'
 	}
@@ -1005,7 +1060,7 @@ try {
 	$veeamSession = $null
 	try {
 		Write-Log -Level INFO -Message "Connecting to Veeam REST API: $VeeamServer"
-		$veeamSession = New-VeeamApiSession -Server $VeeamServer -Username $VeeamUsername -Password $VeeamPassword -AllowInsecureTls:$AllowInsecureVeeamTls
+		$veeamSession = New-VeeamApiSession -Server $VeeamServer -Username $VeeamUsername -Secret $VeeamSecret -AllowInsecureTls:$AllowInsecureVeeamTls
 
 		# Step 3: perform add-only sync into Veeam inventory and job scope via REST.
 		Write-Log -Level INFO -Message "Resolving Veeam NAS cache repository: $VeeamCacheRepositoryName"
@@ -1013,7 +1068,8 @@ try {
 
 		$credentialsDescription = "Managed by auto_nas.ps1 for Azure Files account $StorageAccountName"
 		Write-Log -Level INFO -Message "Ensuring Veeam credentials record for SMB user: $AzureFilesSmbUsername"
-		$accessCredentialId = Ensure-VeeamStandardCredentials -Session $veeamSession -Username $AzureFilesSmbUsername -Password $StorageAccountKey -Description $credentialsDescription
+		$azureStorageKeySecret = ConvertTo-SecureString -String $StorageAccountKey -AsPlainText -Force
+		$accessCredentialId = Set-VeeamStandardCredentials -Session $veeamSession -Username $AzureFilesSmbUsername -Secret $azureStorageKeySecret -Description $credentialsDescription
 
 		$addedToInventory = @()
 		$addedToJob = @()
@@ -1024,14 +1080,14 @@ try {
 		$resolvedServerIdsByPath = @{}
 
 		foreach ($unc in $uncPaths) {
-			$normalizedUnc = Normalize-NasPath -Path $unc
+			$normalizedUnc = ConvertTo-NasPath -Path $unc
 			if ($smbServersByPath.ContainsKey($normalizedUnc)) {
 				$resolvedServerIdsByPath[$normalizedUnc] = [string]$smbServersByPath[$normalizedUnc].id
 				continue
 			}
 
 			Write-Log -Level INFO -Message "Adding share to Veeam inventory: $unc"
-			Add-VeeamSmbShareServer -Session $veeamSession -UncPath $unc -CredentialsId $accessCredentialId -CacheRepositoryId ([string]$cacheRepo.id)
+			Add-VeeamSmbShareServer -Session $veeamSession -UncPath $unc -AccessRecordId $accessCredentialId -CacheRepositoryId ([string]$cacheRepo.id)
 			$addedToInventory += $unc
 
 			# Refresh index after async add operation.
@@ -1062,7 +1118,7 @@ try {
 		}
 
 		foreach ($unc in $uncPaths) {
-			$normalizedUnc = Normalize-NasPath -Path $unc
+			$normalizedUnc = ConvertTo-NasPath -Path $unc
 			if (-not $resolvedServerIdsByPath.ContainsKey($normalizedUnc)) {
 				if ($smbServersByPath.ContainsKey($normalizedUnc)) {
 					$resolvedServerIdsByPath[$normalizedUnc] = [string]$smbServersByPath[$normalizedUnc].id

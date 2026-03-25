@@ -245,49 +245,6 @@ function Exit-Script {
 }
 
 # Throws if a required input is empty so failures happen early and clearly.
-=======
-
-	$logDir = Join-Path -Path $PSScriptRoot -ChildPath 'logs'
-	if (-not (Test-Path -LiteralPath $logDir)) {
-		New-Item -Path $logDir -ItemType Directory -Force | Out-Null
-	}
-
-	$logPath = Join-Path -Path $logDir -ChildPath ("auto_nas-{0}.log" -f (Get-Date -Format 'yyyyMMdd'))
-	Add-Content -LiteralPath $logPath -Value $line
-}
-
-function Import-DotEnvIfPresent {
-	param(
-		[Parameter(Mandatory = $true)][string]$DotEnvPath
-	)
-
-	if (-not (Test-Path -LiteralPath $DotEnvPath)) {
-		return
-	}
-
-	Write-Log -Level INFO -Message "Loading .env from: $DotEnvPath"
-
-	foreach ($rawLine in Get-Content -LiteralPath $DotEnvPath -ErrorAction Stop) {
-		$line = $rawLine.Trim()
-		if ($line.Length -eq 0) { continue }
-		if ($line.StartsWith('#')) { continue }
-
-		$idx = $line.IndexOf('=')
-		if ($idx -lt 1) { continue }
-
-		$name = $line.Substring(0, $idx).Trim()
-		$value = $line.Substring($idx + 1).Trim()
-
-		if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
-			$value = $value.Substring(1, $value.Length - 2)
-		}
-
-		if ($name.Length -eq 0) { continue }
-		[Environment]::SetEnvironmentVariable($name, $value, 'Process')
-	}
-}
-
->>>>>>> 6d5e6e0 (Initial Azure Files share discovery script)
 function Assert-NonEmpty {
 	param(
 		[Parameter(Mandatory = $true)][string]$Name,
@@ -299,7 +256,6 @@ function Assert-NonEmpty {
 	}
 }
 
-<<<<<<< HEAD
 # Builds canonicalized resource used by Azure Storage Shared Key auth.
 function New-AzureStorageCanonicalizedResource {
 	param(
@@ -522,27 +478,6 @@ function Get-AzureFileShareNames {
 }
 
 # Builds an SMB UNC path expected by Veeam (\\account.file.core.windows.net\share).
-=======
-function Get-AzureFileShareNames {
-	param(
-		[Parameter(Mandatory = $true)][string]$AccountName,
-		[Parameter(Mandatory = $true)][string]$AccountKey
-	)
-
-	if (-not (Get-Module -ListAvailable -Name Az.Storage)) {
-		throw "Az.Storage module is required. Install it with: Install-Module Az.Storage -Scope AllUsers"
-	}
-
-	Import-Module Az.Storage -ErrorAction Stop
-
-	$ctx = New-AzStorageContext -StorageAccountName $AccountName -StorageAccountKey $AccountKey -ErrorAction Stop
-
-	$shares = Get-AzStorageShare -Context $ctx -ErrorAction Stop
-	$names = @($shares | ForEach-Object { $_.Name } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-	return $names
-}
-
->>>>>>> 6d5e6e0 (Initial Azure Files share discovery script)
 function Get-AzureFilesUncPath {
 	param(
 		[Parameter(Mandatory = $true)][string]$AccountName,
@@ -553,7 +488,6 @@ function Get-AzureFilesUncPath {
 	return "\\$AccountName.$HostSuffix\$ShareName"
 }
 
-<<<<<<< HEAD
 # Normalizes NAS paths for case-insensitive path comparisons.
 function Normalize-NasPath {
 	param(
@@ -1018,25 +952,10 @@ try {
 	Write-Log -Level INFO -Message ("Script version: {0}" -f $script:ScriptVersion)
 
 	# Step 1: resolve runtime configuration from inline defaults and optional parameter overrides.
-=======
-try {
-	Import-DotEnvIfPresent -DotEnvPath (Join-Path -Path $PSScriptRoot -ChildPath '.env')
-
-	if ([string]::IsNullOrWhiteSpace($StorageAccountName)) { $StorageAccountName = $env:AZURE_STORAGE_ACCOUNT }
-	if ([string]::IsNullOrWhiteSpace($StorageAccountKey)) { $StorageAccountKey = $env:AZURE_STORAGE_KEY }
-	if ([string]::IsNullOrWhiteSpace($VeeamJobName)) { $VeeamJobName = $env:VEEAM_NAS_JOB_NAME }
-	if ([string]::IsNullOrWhiteSpace($VeeamServer)) { $VeeamServer = $env:VEEAM_SERVER }
-	if ([string]::IsNullOrWhiteSpace($AzureFilesSmbUsername)) { $AzureFilesSmbUsername = $env:AZURE_FILES_SMB_USERNAME }
-	if ([string]::IsNullOrWhiteSpace($AzureFilesHostSuffix) -and -not [string]::IsNullOrWhiteSpace($env:AZURE_FILES_HOST_SUFFIX)) {
-		$AzureFilesHostSuffix = $env:AZURE_FILES_HOST_SUFFIX
-	}
-
->>>>>>> 6d5e6e0 (Initial Azure Files share discovery script)
 	Assert-NonEmpty -Name 'AZURE_STORAGE_ACCOUNT (StorageAccountName)' -Value $StorageAccountName
 	Assert-NonEmpty -Name 'AZURE_STORAGE_KEY (StorageAccountKey)' -Value $StorageAccountKey
 
 	if ([string]::IsNullOrWhiteSpace($AzureFilesSmbUsername)) {
-<<<<<<< HEAD
 		$AzureFilesSmbUsername = "Azure\$StorageAccountName"
 	}
 
@@ -1053,17 +972,6 @@ try {
 	if ($shareNames.Count -eq 0) {
 		Write-Log -Level WARN -Message 'No Azure Files shares found.'
 		Exit-Script -Code 0
-=======
-		$AzureFilesSmbUsername = "Azure\\$StorageAccountName"
-	}
-
-	Write-Log -Level INFO -Message "Enumerating Azure Files shares in storage account: $StorageAccountName"
-	$shareNames = Get-AzureFileShareNames -AccountName $StorageAccountName -AccountKey $StorageAccountKey
-
-	if ($shareNames.Count -eq 0) {
-		Write-Log -Level WARN -Message 'No Azure Files shares found.'
-		exit 0
->>>>>>> 6d5e6e0 (Initial Azure Files share discovery script)
 	}
 
 	$uncPaths = @(
@@ -1077,7 +985,6 @@ try {
 		Write-Log -Level INFO -Message "Share: $unc"
 	}
 
-<<<<<<< HEAD
 	# List-only mode is useful for validation without touching Veeam.
 	if ($ListOnly) {
 		Exit-Script -Code 0
@@ -1086,18 +993,10 @@ try {
 	Assert-NonEmpty -Name 'VEEAM_NAS_JOB_NAME (VeeamJobName)' -Value $VeeamJobName
 	Assert-NonEmpty -Name 'VEEAM_USERNAME (VeeamUsername)' -Value $VeeamUsername
 	Assert-NonEmpty -Name 'VEEAM_PASSWORD (VeeamPassword)' -Value $VeeamPassword
-=======
-	if ($ListOnly) {
-		exit 0
-	}
-
-	Assert-NonEmpty -Name 'VEEAM_NAS_JOB_NAME (VeeamJobName)' -Value $VeeamJobName
->>>>>>> 6d5e6e0 (Initial Azure Files share discovery script)
 	if ([string]::IsNullOrWhiteSpace($VeeamServer)) {
 		$VeeamServer = 'localhost'
 	}
 
-<<<<<<< HEAD
 	if ([string]::IsNullOrWhiteSpace($VeeamCacheRepositoryName)) {
 		# Common default in many Veeam installs.
 		$VeeamCacheRepositoryName = 'Default Backup Repository'
@@ -1219,11 +1118,4 @@ catch {
 	}
 
 	Exit-Script -Code 1
-=======
-	throw "Veeam integration not yet wired in. Next step: confirm available Veeam PowerShell cmdlets and job type on the target Windows host."
-}
-catch {
-	Write-Log -Level ERROR -Message $_.Exception.Message
-	exit 1
->>>>>>> 6d5e6e0 (Initial Azure Files share discovery script)
 }
